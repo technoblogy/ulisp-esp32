@@ -1,5 +1,5 @@
 /* uLisp ESP32 Version 2.3 Beta - www.ulisp.com
-   David Johnson-Davies - www.technoblogy.com - 5th July 2018
+   David Johnson-Davies - www.technoblogy.com - 2nd June 2018
 
    Licensed under the MIT license: https://opensource.org/licenses/MIT
 */
@@ -20,6 +20,7 @@
 #include <SPI.h>
 #include <Wire.h>
 #include <limits.h>
+#include <EEPROM.h>
 
 #if defined(sdcardsupport)
 #include <SD.h>
@@ -379,107 +380,85 @@ char *MakeFilename (object *arg) {
 
 // Save-image and load-image
 
-#if defined(sdcardsupport)
-void SDWriteInt(File file, int data) {
-  file.write(data & 0xFF); file.write(data>>8 & 0xFF);
+void EpromWriteInt(int *addr, int data) {
+  EEPROM.write((*addr)++, data & 0xFF); EEPROM.write((*addr)++, data>>8 & 0xFF);
 }
 
-void SDWritePtr(File file, uintptr_t data) {
-  file.write(data & 0xFF); file.write(data>>8 & 0xFF);
-  file.write(data>>16 & 0xFF); file.write(data>>24 & 0xFF);
+void EpromWritePtr(int *addr, uintptr_t data) {
+  EEPROM.write((*addr)++, data & 0xFF); EEPROM.write((*addr)++, data>>8 & 0xFF);
+  EEPROM.write((*addr)++, data>>16 & 0xFF); EEPROM.write((*addr)++, data>>24 & 0xFF);
 }
-#endif
 
 int saveimage (object *arg) {
-#if defined(sdcardsupport)
-  SD.begin(SDCARD_SS_PIN);
-  File file;
-  if (stringp(arg)) {
-    file = SD.open(MakeFilename(arg), O_RDWR | O_CREAT | O_TRUNC);
-    arg = NULL;
-  } else file = SD.open("ULISP.IMG", O_RDWR | O_CREAT | O_TRUNC);
-  if (!file) error(PSTR("Problem saving to SD card"));
   unsigned int imagesize = compactimage(&arg);
-  SDWritePtr(file, (uintptr_t)arg);
-  SDWriteInt(file, imagesize);
-  SDWritePtr(file, (uintptr_t)GlobalEnv);
-  SDWritePtr(file, (uintptr_t)GCStack);
+  // Save to EEPROM
+  int bytesneeded = imagesize*8 + SYMBOLTABLESIZE + 36;
+  if (bytesneeded > EEPROMSIZE) {
+    pfstring(PSTR("Error: Image size too large: "), pserial);
+    pint(imagesize, pserial); pln(pserial);
+    GCStack = NULL;
+    longjmp(exception, 1);
+  }
+  EEPROM.begin(EEPROMSIZE);
+  int addr = 0;
+  EpromWritePtr(&addr, (uintptr_t)arg);
+  EpromWriteInt(&addr, imagesize);
+  EpromWritePtr(&addr, (uintptr_t)GlobalEnv);
+  EpromWritePtr(&addr, (uintptr_t)GCStack);
   #if SYMBOLTABLESIZE > BUFFERSIZE
-  SDWritePtr(file, (uintptr_t)SymbolTop);
-  for (int i=0; i<SYMBOLTABLESIZE; i++) file.write(SymbolTable[i]);
+  EpromWritePtr(&addr, (uintptr_t)SymbolTop);
+  for (int i=0; i<SYMBOLTABLESIZE; i++) EEPROM.write(addr++, SymbolTable[i]);
   #endif
   for (unsigned int i=0; i<imagesize; i++) {
     object *obj = &Workspace[i];
-    SDWritePtr(file, (uintptr_t)car(obj));
-    SDWritePtr(file, (uintptr_t)cdr(obj));
+    EpromWritePtr(&addr, (uintptr_t)car(obj));
+    EpromWritePtr(&addr, (uintptr_t)cdr(obj));
   }
-  file.close();
+  EEPROM.commit();
   return imagesize;
-#else
-  (void) arg;
-  error(PSTR("save-image not available"));
-  return 0;
-#endif
 }
 
-#if defined(sdcardsupport)
-unsigned int SDReadInt (File file) {
-  int lo = file.read(); int hi = file.read();
+unsigned int EpromReadInt (int *addr) {
+  int lo = EEPROM.read((*addr)++); int hi = EEPROM.read((*addr)++);
   return lo | hi<<8;
 }
 
-object *SDReadPtr (File file) {
-  uintptr_t b0 = file.read(); uintptr_t b1 = file.read();
-  uintptr_t b2 = file.read(); uintptr_t b3 = file.read();
+object *EpromReadPtr (int *addr) {
+  uint8_t b0 = EEPROM.read((*addr)++); uint8_t b1 = EEPROM.read((*addr)++);
+  uint8_t b2 = EEPROM.read((*addr)++); uint8_t b3 = EEPROM.read((*addr)++);
   return (object *)(b0 | b1<<8 | b2<<16 | b3<<24);
 }
-#endif
 
 int loadimage (object *filename) {
-#if defined(sdcardsupport)
-  SD.begin(SDCARD_SS_PIN);
-  File file;
-  if (stringp(filename)) file = SD.open(MakeFilename(filename));
-  else file = SD.open("ULISP.IMG");
-  if (!file) error(PSTR("Problem loading from SD card"));
-  SDReadPtr(file);
-  int imagesize = SDReadInt(file);
-  GlobalEnv = SDReadPtr(file);
-  GCStack = SDReadPtr(file);
+  (void) filename;
+  EEPROM.begin(EEPROMSIZE);
+  int addr = 0;
+  EpromReadPtr(&addr); // Skip eval address
+  int imagesize = EpromReadInt(&addr);
+  if (imagesize == 0 || imagesize == 0xFFFF) error(PSTR("No saved image"));
+  GlobalEnv = EpromReadPtr(&addr);
+  GCStack = EpromReadPtr(&addr);
   #if SYMBOLTABLESIZE > BUFFERSIZE
-  SymbolTop = (char *)SDReadPtr(file);
-  for (int i=0; i<SYMBOLTABLESIZE; i++) SymbolTable[i] = file.read();
+  SymbolTop = (char *)EpromReadPtr(&addr);
+  for (int i=0; i<SYMBOLTABLESIZE; i++) SymbolTable[i] = EEPROM.read(addr++);
   #endif
   for (int i=0; i<imagesize; i++) {
     object *obj = &Workspace[i];
-    car(obj) = SDReadPtr(file);
-    cdr(obj) = SDReadPtr(file);
+    car(obj) = EpromReadPtr(&addr);
+    cdr(obj) = EpromReadPtr(&addr);
   }
-  file.close();
   gc(NULL, NULL);
   return imagesize;
-#else
-  (void) filename;
-  error(PSTR("load-image not available"));
-  return 0;
-#endif
 }
 
 void autorunimage () {
-#if defined(sdcardsupport)
-  SD.begin(SDCARD_SS_PIN);
-  File file = SD.open("ULISP.IMG");
-  if (!file) error(PSTR("Error: Problem autorunning from SD card"));
-  object *autorun = SDReadPtr(file);
   object *nullenv = NULL;
-  file.close();
-  if (autorun != NULL) {
-    loadimage(NULL);
+  int addr = 0;
+  object *autorun = EpromReadPtr(&addr);
+  if (autorun != NULL && (unsigned int)autorun != 0xFFFF) {
+    loadimage(nil);
     apply(autorun, NULL, &nullenv);
   }
-#else
-  error(PSTR("autorun not available"));
-#endif
 }
 
 // Error handling
