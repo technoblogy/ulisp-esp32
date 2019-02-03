@@ -1,10 +1,4 @@
 # ulisp-esp32
-A version of the Lisp programming language for ESP32-based boards
+This is superseded by ulisp-esp for the ESP8266 and ESP32; see:
 
-Install the Espressif Arduino repository as described at:
-
-https://github.com/espressif/arduino-esp32
-
-Tested on the DOIT ESP32 DEVKIT v1.
-
-It's functionally equivalent to the ARM version, with the addition of save-image and load-image using the ESP32's EEPROM. It doesn't yet have the Wi-Fi features of the ESP8266 version.
+https://github.com/technoblogy/ulisp-esp
